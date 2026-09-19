@@ -5,6 +5,7 @@ function cloneState(state: PlayerState): PlayerState {
     ...state,
     buffered: state.buffered.map((range) => ({ ...range })),
     seekable: state.seekable.map((range) => ({ ...range })),
+    qualityLevels: state.qualityLevels.map((level) => ({ ...level })),
   };
 }
 
@@ -22,11 +23,10 @@ export class StateStore {
 
   update(patch: Partial<PlayerState>): PlayerState {
     this.state = cloneState({ ...this.state, ...patch });
-    const snapshot = this.get();
     for (const subscriber of [...this.subscribers]) {
-      subscriber(snapshot);
+      subscriber(this.get());
     }
-    return snapshot;
+    return this.get();
   }
 
   subscribe(subscriber: (state: PlayerState) => void): () => void {

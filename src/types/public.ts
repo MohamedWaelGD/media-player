@@ -9,7 +9,7 @@ export type ThumbnailCrossOrigin = 'anonymous' | 'use-credentials';
 export interface TimelineThumbnailOptions {
   /** URL of a WebVTT file containing image or sprite cues. */
   src?: string;
-  /** Use a detached video and canvas when a VTT cue is unavailable. */
+  /** Use a hidden video and canvas when a VTT cue is unavailable. */
   fallback?: ThumbnailFallback;
   /** CORS mode for generated frame extraction. */
   crossOrigin?: ThumbnailCrossOrigin;
@@ -187,7 +187,11 @@ export type EngineErrorHandler = (error: unknown) => void;
 export interface PlaybackEngine {
   readonly name: string;
   canPlay(video: HTMLVideoElement, source: MediaSource): boolean;
-  load(video: HTMLVideoElement, source: MediaSource): Promise<EngineMetadata>;
+  load(
+    video: HTMLVideoElement,
+    source: MediaSource,
+    signal?: AbortSignal,
+  ): Promise<EngineMetadata>;
   destroy(): void;
   setErrorHandler?(handler: EngineErrorHandler | undefined): void;
   getQualityLevels?(): QualityLevel[];
@@ -221,6 +225,20 @@ export interface ErrorEvent {
   error: unknown;
 }
 
+export type PlayerWarning =
+  | {
+      kind: 'resource';
+      resource: 'chapters' | 'thumbnail-vtt' | 'thumbnail-generated' | 'engine';
+      src?: string;
+      error: unknown;
+    }
+  | {
+      kind: 'plugin';
+      plugin: string;
+      phase: 'setup' | 'cleanup';
+      error: unknown;
+    };
+
 export interface PlayerEventMap {
   'load-start': { source: MediaSource };
   loaded: { source: MediaSource; streamType: StreamType; duration: number | null };
@@ -243,6 +261,7 @@ export interface PlayerEventMap {
   completed: TrackingData;
   ended: { currentTime: number };
   error: ErrorEvent;
+  warning: PlayerWarning;
   destroy: undefined;
 }
 

@@ -24,6 +24,7 @@ export type {
   PlayerEventName,
   PlayerPlugin,
   PlayerState,
+  PlayerWarning,
   ProgressEvent,
   QualityLevel,
   QualitySelection,

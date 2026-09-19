@@ -6,7 +6,10 @@ export class ChapterController {
   private generation = 0;
   private abortController?: AbortController;
 
-  constructor(private readonly onChange: (chapters: Chapter[]) => void) {}
+  constructor(
+    private readonly onChange: (chapters: Chapter[]) => void,
+    private readonly onWarning: (error: unknown, src: string) => void,
+  ) {}
 
   reset(source?: MediaSource): void {
     this.generation += 1;
@@ -20,6 +23,7 @@ export class ChapterController {
 
     const { src } = source.chapterTrack;
     if (typeof fetch === 'undefined') {
+      this.onWarning(new Error('The browser does not provide fetch.'), src);
       return;
     }
     const generation = this.generation;
@@ -39,7 +43,11 @@ export class ChapterController {
         this.chapters = parseChapterVtt(text);
         this.onChange(this.get());
       })
-      .catch(() => undefined);
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) {
+          this.onWarning(error, src);
+        }
+      });
   }
 
   get(): Chapter[] {

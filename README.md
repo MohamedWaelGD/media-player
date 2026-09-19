@@ -19,6 +19,8 @@ HLS support:
 npm install hls.js
 ```
 
+The package tooling and supported development environment require Node.js 20 or newer.
+
 ## Headless API
 
 ```ts
@@ -62,6 +64,17 @@ of showing only the raw browser video surface.
 The same API works in Angular, React, Vue, Svelte, or vanilla JavaScript. Framework
 wrappers are unnecessary because the player exposes ordinary methods, typed events, and
 a state subscription.
+
+Playback engines are selected in native-first order. Configured engines are checked after the
+built-in native engine, which preserves native HLS playback on browsers such as Safari.
+
+### Framework Integration
+
+The headless entry is compatible with Vite, Webpack, Vue, Angular, React, and Next.js. Importing
+`MediaPlayer` is SSR-safe; create the player only after the framework has mounted an actual
+`HTMLVideoElement`, and call `destroy()` from the framework cleanup hook. The `/element` entry
+can be used from any framework that supports custom elements, provided `defineMediaPlayerElement()`
+is called in the browser.
 
 ```ts
 const unsubscribe = player.subscribe((state) => {
@@ -172,9 +185,10 @@ media-player::part(play-button) {
 
 The component includes responsive custom controls, pointer-driven scrubbing, Phosphor
 icons, hover frame previews, an expandable volume control, a gear settings menu for
-speed and adaptive quality, and controls that fade after 2.5 seconds of inactivity while
-playing. Preview frames can come from a WebVTT sprite track or from a best-effort canvas
-fallback:
+speed and adaptive quality, and controls that fade after 3 seconds of inactivity while
+playing. Preview frames should preferably come from a WebVTT sprite track. The generated
+canvas fallback is opt-in because it creates a second hidden video and performs additional
+decoding and seeking:
 
 ```html
 <media-player
@@ -198,6 +212,9 @@ Component dispatches `media-player-change` whenever its internal player is repla
 destroyed, allowing framework integrations to rebind typed `subscribe()` and `on()`
 listeners through `element.mediaPlayer`. HLS sources expose manifest quality levels through
 `getQualityLevels()` and `setQuality()`. Fixed MP4 sources do not expose a quality menu.
+Optional resource failures are reported through the typed `warning` event without changing
+playback state. This includes chapter tracks, thumbnail resources, plugin setup/cleanup, and
+engine cleanup failures.
 Caption tracks are read from WebVTT `TextTrack`s supplied through `MediaSource.captions` or the
 Web Component caption attributes, then rendered in a customizable layer above the video. The
 component exposes a captions toggle when tracks are available. Caption preferences persist in
@@ -249,6 +266,8 @@ The Web Component exposes the same feature through `chapter-src`, `chapter-lang`
 `chapter-label`. When chapters are available, the Chapters control appears beside Captions.
 Selecting a chapter seeks to its start, chapter boundaries appear on the timeline, and timeline
 previews include the chapter title. Chapter loading failures are non-fatal to playback.
+Inline chapters currently require finite, non-negative `startTime` and `endTime` values. If
+chapters overlap, active chapter lookup uses the first matching chapter after start-time sorting.
 
 To test chapters manually, serve the VTT and media files over HTTP, open the player, and verify
 the Chapters button, popup keyboard navigation, seeking, active chapter highlighting, timeline
@@ -266,7 +285,8 @@ The core normalizes browser events into:
 load-start, loaded, play, pause, buffer-start, buffer-end,
 seek-start, seek-end, seek-blocked, progress, tracking-report,
 volume-change, speed-change, fullscreen-change,
-picture-in-picture-change, quality-change, milestone, completed, ended, error, destroy
+picture-in-picture-change, quality-change, milestone, completed, ended,
+chapters-change, error, warning, destroy
 ```
 
 All `on()` calls return an unsubscribe function.
@@ -286,6 +306,7 @@ npm run lint
 npm test
 npm run test:browser
 npm run validate:package
+npm run validate:release
 ```
 
 The package publishes ESM, CommonJS, and declarations. The headless core is available at

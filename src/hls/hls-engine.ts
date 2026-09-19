@@ -35,6 +35,7 @@ export class HlsEngine implements PlaybackEngine {
   readonly name = 'hls.js';
   private hls?: InstanceType<HlsConstructor>;
   private errorHandler?: EngineErrorHandler;
+  private cancelLoad?: () => void;
 
   constructor(
     private readonly Hls: HlsConstructor,
@@ -45,7 +46,11 @@ export class HlsEngine implements PlaybackEngine {
     return isHlsSource(source) && this.Hls.isSupported();
   }
 
-  async load(video: HTMLVideoElement, source: MediaSource): Promise<EngineMetadata> {
+  async load(
+    video: HTMLVideoElement,
+    source: MediaSource,
+    signal?: AbortSignal,
+  ): Promise<EngineMetadata> {
     this.destroy();
     if (!this.Hls.isSupported()) {
       throw new MediaPlayerError(
@@ -58,6 +63,34 @@ export class HlsEngine implements PlaybackEngine {
     this.hls = hls;
     return new Promise<EngineMetadata>((resolve, reject) => {
       let settled = false;
+      const off = (event: string, handler: (...args: never[]) => void) => {
+        (
+          hls as unknown as {
+            off?: (name: string, callback: (...args: never[]) => void) => void;
+          }
+        ).off?.(event, handler);
+      };
+      const cleanup = () => {
+        off(this.Hls.Events.ERROR, onError);
+        off(this.Hls.Events.MEDIA_ATTACHED, onAttached);
+        off(this.Hls.Events.LEVEL_LOADED, onLevelLoaded);
+        signal?.removeEventListener('abort', abort);
+        if (this.cancelLoad === abort) {
+          this.cancelLoad = undefined;
+        }
+      };
+      const abort = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        reject(
+          Object.assign(new Error('HLS media load was cancelled.'), {
+            name: 'AbortError',
+          }),
+        );
+      };
       const fail = (cause: unknown) => {
         const error =
           cause instanceof MediaPlayerError
@@ -72,9 +105,15 @@ export class HlsEngine implements PlaybackEngine {
           this.errorHandler?.(error);
         }
       };
-      const onError = (_event: string, data: { fatal?: boolean; error?: unknown }) => {
+      const onError = (
+        _event: string,
+        data: { fatal?: boolean; error?: unknown; type?: string; details?: string },
+      ) => {
+        if (this.hls !== hls) {
+          return;
+        }
         if (data.fatal) {
-          fail(data.error ?? new Error('Fatal HLS playback error.'));
+          fail(data);
         }
       };
       const onAttached = () => hls.loadSource(source.src);
@@ -86,6 +125,7 @@ export class HlsEngine implements PlaybackEngine {
           return;
         }
         settled = true;
+        this.cancelLoad = undefined;
         const streamType =
           source.streamType ?? (data.details?.live || data.live ? 'live' : 'vod');
         resolve({
@@ -104,11 +144,15 @@ export class HlsEngine implements PlaybackEngine {
       hls.on(this.Hls.Events.ERROR, onError);
       hls.once(this.Hls.Events.MEDIA_ATTACHED, onAttached);
       hls.once(this.Hls.Events.LEVEL_LOADED, onLevelLoaded);
+      signal?.addEventListener('abort', abort, { once: true });
+      this.cancelLoad = abort;
       hls.attachMedia(video);
     });
   }
 
   destroy(): void {
+    this.cancelLoad?.();
+    this.cancelLoad = undefined;
     this.hls?.destroy();
     this.hls = undefined;
   }

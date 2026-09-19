@@ -46,7 +46,11 @@ export class GeneratedThumbnailProvider {
   private generation = 0;
   private disposed = false;
 
-  constructor(source: MediaSource, options: TimelineThumbnailOptions) {
+  constructor(
+    source: MediaSource,
+    options: TimelineThumbnailOptions,
+    private readonly onWarning: (error: unknown) => void,
+  ) {
     this.source = source;
     this.options = options;
   }
@@ -141,7 +145,10 @@ export class GeneratedThumbnailProvider {
       this.cache.set(bucket, { src, lastUsed: Date.now() });
       this.trimCache();
       return { kind: 'generated', time: bucket, src, crop: null };
-    } catch {
+    } catch (error) {
+      if (generation === this.generation && !this.disposed) {
+        this.onWarning(error);
+      }
       return null;
     }
   }

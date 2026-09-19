@@ -155,6 +155,7 @@ export class CaptionRenderer {
   private readonly onChange?: CaptionChangeHandler;
   private readonly onDrag?: CaptionDragHandler;
   private selectedTrack?: TextTrack;
+  private readonly originalTrackModes = new Map<TextTrack, TextTrackMode>();
   private trackChangeHandler?: () => void;
   private preferences: CaptionPreferences;
   private enabled = false;
@@ -294,6 +295,10 @@ export class CaptionRenderer {
     this.resizeObserver?.disconnect();
     this.group.replaceChildren();
     this.group.hidden = true;
+    for (const [track, mode] of this.originalTrackModes) {
+      track.mode = mode;
+    }
+    this.originalTrackModes.clear();
   }
 
   private getCaptionTracks(): TextTrack[] {
@@ -317,6 +322,11 @@ export class CaptionRenderer {
     this.syncing = true;
     try {
       const tracks = this.getCaptionTracks();
+      for (const track of tracks) {
+        if (!this.originalTrackModes.has(track)) {
+          this.originalTrackModes.set(track, track.mode);
+        }
+      }
       const nextTrack = tracks.includes(this.selectedTrack as TextTrack)
         ? this.selectedTrack
         : (tracks.find((track) => track.mode === 'showing') ?? tracks[0]);

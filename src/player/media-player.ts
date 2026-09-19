@@ -65,8 +65,9 @@ export class MediaPlayer implements Player {
   private readonly tracker: TrackingEngine;
   private readonly thumbnails: ThumbnailController;
   private readonly chapters: ChapterController;
-  private readonly plugins = new PluginManager();
+  private readonly plugins: PluginManager;
   private readonly mediaListeners: Array<() => void> = [];
+  private readonly ownedCaptionTracks = new Set<HTMLTrackElement>();
   private readonly engines: PlaybackEngine[];
   private engine?: PlaybackEngine;
   private currentSource?: MediaSource;
@@ -74,6 +75,7 @@ export class MediaPlayer implements Player {
   private correctingSeek = false;
   private lastReportTime = 0;
   private loadId = 0;
+  private activeLoadAbortController?: AbortController;
   private destroyed = false;
 
   constructor(target: HTMLVideoElement | string, options: MediaPlayerOptions = {}) {
@@ -102,13 +104,38 @@ export class MediaPlayer implements Player {
       maxReachedTime: 0,
       watchedPercentage: null,
     });
+    this.plugins = new PluginManager(({ name, phase, error }) => {
+      this.events.emit('warning', {
+        kind: 'plugin',
+        plugin: name,
+        phase,
+        error,
+      });
+    });
     this.thumbnails = new ThumbnailController(
       () => this.state.get(),
       this.options.seekPolicy,
+      (resource, error, src) => {
+        this.events.emit('warning', {
+          kind: 'resource',
+          resource,
+          error,
+          ...(src ? { src } : {}),
+        });
+      },
     );
-    this.chapters = new ChapterController((chapters) => {
-      this.events.emit('chapters-change', { chapters });
-    });
+    this.chapters = new ChapterController(
+      (chapters) => {
+        this.events.emit('chapters-change', { chapters });
+      },
+      (error, src) =>
+        this.events.emit('warning', {
+          kind: 'resource',
+          resource: 'chapters',
+          src,
+          error,
+        }),
+    );
 
     this.attachMediaListeners();
     this.plugins.setup(this.options.plugins, this);
@@ -122,11 +149,27 @@ export class MediaPlayer implements Player {
     this.assertUsable();
     validateSource(source);
     const id = ++this.loadId;
+    this.activeLoadAbortController?.abort();
+    const abortController = new AbortController();
+    this.activeLoadAbortController = abortController;
 
-    this.engine?.destroy();
+    this.clearEngineErrorHandler(this.engine);
+    if (!this.isCurrentLoad(id)) {
+      return;
+    }
+    this.destroyEngine(this.engine);
     this.engine = undefined;
+    if (!this.isCurrentLoad(id)) {
+      return;
+    }
     this.thumbnails.reset(source);
+    if (!this.isCurrentLoad(id)) {
+      return;
+    }
     this.chapters.reset(source);
+    if (!this.isCurrentLoad(id)) {
+      return;
+    }
     this.currentSource = source;
     this.pendingSeek = undefined;
     this.lastReportTime = 0;
@@ -144,16 +187,37 @@ export class MediaPlayer implements Player {
       maxReachedTime: 0,
       watchedPercentage: null,
     });
-    this.events.emit('load-start', { source });
-
-    if (source.poster !== undefined) {
-      this.video.poster = source.poster;
+    if (!this.isCurrentLoad(id)) {
+      return;
     }
-    this.syncCaptionTracks(source.captions ?? []);
+    this.events.emit('load-start', { source });
+    if (!this.isCurrentLoad(id)) {
+      return;
+    }
 
-    const engine = this.engines.find((candidate) =>
-      candidate.canPlay(this.video, source),
-    );
+    this.video.poster = source.poster ?? '';
+    this.syncCaptionTracks(source.captions ?? []);
+    if (!this.isCurrentLoad(id)) {
+      return;
+    }
+
+    let engine: PlaybackEngine | undefined;
+    try {
+      engine = this.engines.find((candidate) => candidate.canPlay(this.video, source));
+    } catch (cause) {
+      if (!this.isCurrentLoad(id)) {
+        return;
+      }
+      const error = new MediaPlayerError(
+        'LOAD_FAILED',
+        'The playback engine could not be selected.',
+        {
+          cause,
+        },
+      );
+      this.handleError(error);
+      throw error;
+    }
     if (!engine) {
       const error = new MediaPlayerError(
         'UNSUPPORTED_SOURCE',
@@ -163,12 +227,19 @@ export class MediaPlayer implements Player {
       throw error;
     }
 
+    if (!this.isCurrentLoad(id)) {
+      return;
+    }
     this.engine = engine;
-    engine.setErrorHandler?.((error: unknown) => this.handleError(error));
-
     try {
-      const metadata = await engine.load(this.video, source);
-      if (id !== this.loadId || this.destroyed) {
+      engine.setErrorHandler?.((error: unknown) => {
+        if (this.isCurrentLoad(id) && this.engine === engine) {
+          this.handleError(error);
+        }
+      });
+
+      const metadata = await engine.load(this.video, source, abortController.signal);
+      if (!this.isCurrentLoad(id)) {
         return;
       }
 
@@ -186,17 +257,23 @@ export class MediaPlayer implements Player {
         maxReachedTime: this.tracker.getData(this.video.currentTime)?.maxReachedTime ?? 0,
         watchedPercentage: this.tracker.getWatchedPercentage(),
       });
+      if (!this.isCurrentLoad(id)) {
+        return;
+      }
       this.events.emit('loaded', {
         source,
         streamType: metadata.streamType,
         duration,
       });
+      if (!this.isCurrentLoad(id)) {
+        return;
+      }
 
       if (this.options.autoplay) {
-        await this.play();
+        await this.autoplay(id);
       }
     } catch (cause) {
-      if (id !== this.loadId || this.destroyed) {
+      if (!this.isCurrentLoad(id) || abortController.signal.aborted) {
         return;
       }
       const error =
@@ -207,6 +284,10 @@ export class MediaPlayer implements Player {
             });
       this.handleError(error);
       throw error;
+    } finally {
+      if (this.activeLoadAbortController === abortController) {
+        this.activeLoadAbortController = undefined;
+      }
     }
   }
 
@@ -226,9 +307,10 @@ export class MediaPlayer implements Player {
   }
 
   private syncCaptionTracks(captions: NonNullable<MediaSource['captions']>): void {
-    this.video
-      .querySelectorAll<HTMLTrackElement>('track[data-media-player-caption]')
-      .forEach((track) => track.remove());
+    for (const track of this.ownedCaptionTracks) {
+      track.remove();
+    }
+    this.ownedCaptionTracks.clear();
     captions.forEach((caption, index) => {
       const track = this.video.ownerDocument.createElement('track');
       track.dataset.mediaPlayerCaption = 'true';
@@ -238,6 +320,7 @@ export class MediaPlayer implements Player {
       track.label = caption.label ?? caption.srclang ?? `Caption ${index + 1}`;
       track.default = caption.default ?? false;
       this.video.append(track);
+      this.ownedCaptionTracks.add(track);
       if (track.default) {
         track.track.mode = 'showing';
       }
@@ -467,14 +550,22 @@ export class MediaPlayer implements Player {
       return;
     }
     this.destroyed = true;
+    this.loadId += 1;
+    this.activeLoadAbortController?.abort();
+    this.activeLoadAbortController = undefined;
     for (const removeListener of this.mediaListeners.splice(0)) {
       removeListener();
     }
     this.plugins.destroy();
-    this.engine?.destroy();
+    this.clearEngineErrorHandler(this.engine);
+    this.destroyEngine(this.engine);
     this.engine = undefined;
     this.thumbnails.destroy();
     this.chapters.destroy();
+    for (const track of this.ownedCaptionTracks) {
+      track.remove();
+    }
+    this.ownedCaptionTracks.clear();
     this.events.emit('destroy', undefined);
     this.events.clear();
     this.state.clear();
@@ -482,6 +573,57 @@ export class MediaPlayer implements Player {
 
   private createEngines() {
     return [new NativeEngine(), ...this.options.engines];
+  }
+
+  private isCurrentLoad(id: number): boolean {
+    return !this.destroyed && id === this.loadId;
+  }
+
+  private destroyEngine(engine: PlaybackEngine | undefined): void {
+    if (!engine) {
+      return;
+    }
+    try {
+      engine.destroy();
+    } catch (error) {
+      this.events.emit('warning', {
+        kind: 'resource',
+        resource: 'engine',
+        error,
+      });
+    }
+  }
+
+  private clearEngineErrorHandler(engine: PlaybackEngine | undefined): void {
+    if (!engine?.setErrorHandler) {
+      return;
+    }
+    try {
+      engine.setErrorHandler(undefined);
+    } catch (error) {
+      this.events.emit('warning', {
+        kind: 'resource',
+        resource: 'engine',
+        error,
+      });
+    }
+  }
+
+  private async autoplay(id: number): Promise<void> {
+    try {
+      await this.video.play();
+    } catch (cause) {
+      if (!this.isCurrentLoad(id)) {
+        return;
+      }
+      const error = new MediaPlayerError(
+        'PLAYBACK_FAILED',
+        'The browser rejected the playback request.',
+        { cause },
+      );
+      this.handleError(error);
+      throw error;
+    }
   }
 
   private resolveTarget(target: HTMLVideoElement | string): HTMLVideoElement {

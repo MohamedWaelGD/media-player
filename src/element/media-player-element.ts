@@ -899,7 +899,7 @@ export class MediaPlayerElement extends HTMLElementBase {
           ? { src: this.getAttribute('thumbnail-vtt') ?? undefined }
           : {}),
         fallback:
-          this.getAttribute('thumbnail-fallback') === 'none' ? 'none' : 'generated',
+          this.getAttribute('thumbnail-fallback') === 'generated' ? 'generated' : 'none',
         crossOrigin:
           this.getAttribute('thumbnail-crossorigin') === 'use-credentials'
             ? 'use-credentials'
@@ -1893,7 +1893,7 @@ export class MediaPlayerElement extends HTMLElementBase {
 
   private isChapterActive(chapter: Chapter): boolean {
     const time = this.latestState?.currentTime ?? 0;
-    return chapter.startTime <= time && time < chapter.endTime;
+    return findChapter(this.latestChapters, time) === chapter;
   }
 
   private updateChapterMarkers(state = this.latestState): void {
@@ -2307,6 +2307,9 @@ export class MediaPlayerElement extends HTMLElementBase {
     }
     const player = this.shadowRoot?.querySelector('.player');
     const video = this.shadowRoot?.querySelector('video');
+    if (!player?.contains(active)) {
+      return false;
+    }
     return active !== player && active !== video;
   }
 

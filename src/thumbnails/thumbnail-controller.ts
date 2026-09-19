@@ -16,6 +16,11 @@ export class ThumbnailController {
   constructor(
     private readonly getState: () => PlayerState,
     private readonly seekPolicy: Required<SeekPolicyOptions>,
+    private readonly onWarning: (
+      resource: 'thumbnail-vtt' | 'thumbnail-generated',
+      error: unknown,
+      src?: string,
+    ) => void = () => undefined,
   ) {}
 
   reset(source?: MediaSource): void {
@@ -29,10 +34,14 @@ export class ThumbnailController {
     }
     const options = source.thumbnails;
     if (options.src) {
-      this.vtt = new VttThumbnailProvider(options);
+      this.vtt = new VttThumbnailProvider(options, (error, src) =>
+        this.onWarning('thumbnail-vtt', error, src),
+      );
     }
     if (options.fallback === 'generated') {
-      this.generated = new GeneratedThumbnailProvider(source, options);
+      this.generated = new GeneratedThumbnailProvider(source, options, (error) =>
+        this.onWarning('thumbnail-generated', error, source.src),
+      );
     }
   }
 
